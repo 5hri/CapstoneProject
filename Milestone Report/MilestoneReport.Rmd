@@ -1,0 +1,277 @@
+---
+title: "Data Science Captsone - Milestone Report"
+author: "Shriram Gajjar"
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    toc: true
+    theme: readable
+    toc_depth: 2
+---
+
+
+
+```{r global_options, message=FALSE,echo=FALSE, warning=FALSE, results='hide'}
+
+library(dplyr)
+library(stringi);library(stringr)
+library(slam); library(NLP); library(tm) #install.packages("tm",dependencies=TRUE)
+library(ggplot2)
+library(wordcloud)
+
+library(RColorBrewer)
+library(RWekajars);
+library(qdap);library(qdapDictionaries);library(qdapRegex);library(qdapTools)
+
+library(SnowballC)
+
+library(RWeka)
+library(rJava)
+
+library(DT)
+library(googleVis)
+op <- options(gvis.plot.tag="chart")
+
+```
+
+# Summary
+
+The Capstone project for the Coursera Data Science Specialization involves using the [HC Corpora Dataset](http://www.corpora.heliohost.org/). The Capstone project is done in collaboration with [Swiftkey](https://swiftkey.com/en/) and the goal of this project is to design a shiny app with text prediction capabilities.
+
+# Introduction
+
+This milestone report is based on exploratory data analysis of the SwifKey data provided in the context of the Coursera Data Science Capstone. The data consist of 3 text files containing text from three different sources (blogs, news & twitter).
+
+# Loading The Dataset
+
+The HC Corpora dataset is comprised of the output of crawls of news sites, blogs and twitter. A readme file about the data can be found [here](http://www.corpora.heliohost.org/aboutcorpus.html). The dataset contains 3 files across four languages (Russian, Finnish, German and English). This project will focus on the English language datasets. The names of the data files are as follows:
+
+1. en_US.blogs.txt
+2. en_US.twitter.txt
+3. en_US.news.txt
+
+The datasets will be referred to as "Blogs", "Twitter" and "News" in this report.
+
+
+```{r, eval=FALSE, echo=TRUE}
+setwd("~/R/CapstoneProject")
+
+library(downloader)
+fileURL <- "http://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+# download.file(fileURL, destfile = "Dataset.zip", method = "curl")
+download(fileURL, dest="Coursera-SwiftKey.zip", mode="wb")
+
+unlink(fileURL)
+unzip("Coursera-SwiftKey.zip")
+
+blogs <- readLines("./final/en_US/en_US.blogs.txt", encoding = "UTF-8", skipNul=TRUE)
+news <- readLines("./final/en_US/en_US.news.txt", encoding = "UTF-8", skipNul=TRUE)
+twitter <- readLines("./final/en_US/en_US.twitter.txt", encoding = "UTF-8", skipNul=TRUE)
+
+```
+
+
+# Generate a data sample
+
+In order to enable faster data processing, a data sample from all three sources was generated. The sample function below takes a sample of the specified size from the elements of data using either with or without replacement.
+
+```{r, eval=FALSE, echo=TRUE}
+sampleBlogs <- blogs[sample(1:length(blogs),10000)]
+sampleNews <- news[sample(1:length(news),10000)]
+sampleTwitter <- twitter[sample(1:length(twitter),10000)]
+textSample <- c(sampleTwitter,sampleNews,sampleBlogs)
+```
+
+```{r, eval=FALSE, echo=FALSE}
+## Save sample
+writeLines(textSample, "./textSample.txt")
+```
+
+```{r, eval=FALSE, echo=FALSE}
+sampledataCon <- file("./textSample.txt")
+sampledata <- readLines(sampledataCon)
+close(sampledataCon)
+```
+
+# Summary Statistics
+
+The following table provides a summary for the sample can be seen on the table below.. In addition to the size of each data set, the number of lines and words are displayed.
+
+```{r, eval=FALSE, echo=FALSE}
+## Checking the size and length of the files and calculate the word count
+blogsFile <- file.info("./final/en_US/en_US.blogs.txt")$size / 1024.0 / 1024.0
+newsFile <- file.info("./final/en_US/en_US.news.txt")$size / 1024.0 / 1024.0
+twitterFile <- file.info("./final/en_US/en_US.twitter.txt")$size / 1024.0 / 1024.0
+sampleFile <- file.info("./MilestoneReport/textSample.txt")$size / 1024.0 / 1024.0
+
+blogsLength <- length(blogs)
+newsLength <- length(news)
+twitterLength <- length(twitter)
+sampleLength <- length(sampledata)
+
+blogsWords <- sum(sapply(gregexpr("\\S+", blogs), length))
+newsWords <- sum(sapply(gregexpr("\\S+", news), length))
+twitterWords <- sum(sapply(gregexpr("\\S+", twitter), length))
+sampleWords <- sum(sapply(gregexpr("\\S+", sampledata), length))
+```
+
+```{r, eval=FALSE, echo=FALSE}
+fileSummary <- data.frame(
+        fileName = c("Blogs","News","Twitter", "Aggregated Sample"),
+        fileSize = c(round(blogsFile, digits = 2), 
+                     round(newsFile,digits = 2), 
+                     round(twitterFile, digits = 2),
+                     round(sampleFile, digits = 2)),
+        lineCount = c(blogsLength, newsLength, twitterLength, sampleLength),
+        wordCount = c(blogsWords, newsWords, twitterWords, sampleLength)                  
+)
+```
+
+```{r, eval=FALSE, echo=FALSE}
+colnames(fileSummary) <- c("File Name", "File Size in Megabyte", "Line Count", "Word Count")
+
+saveRDS(fileSummary, file = "./fileSummary.Rda")
+```
+
+```{r, eval=TRUE, echo=FALSE}
+fileSummaryDF <- readRDS("./fileSummary.Rda")
+```
+
+```{r, echo=FALSE}
+knitr::kable(head(fileSummaryDF, 10))
+```
+
+
+# Building A Clean Text Corpus
+
+Now that we have our corpus item, we need to clean it. In order to do that, we will transform all characters to lowercase, we will remove the punctuation, remove the numbers and the common english stopwords (and, the, or etc..). Next to that stop and profanity words are erased from the text sample. At the end we obtain a clean text corpus which enables an easy subsequent processing.
+
+The used profanity words can be found at [http://www.bannedwordlist.com/](http://www.bannedwordlist.com/).
+
+```{r, eval=FALSE, echo=TRUE}
+sample.corpus <- Corpus(VectorSource(sampledata))
+
+myCorpus <- tm_map(sample.corpus, content_transformer(function(x) iconv(x, to="UTF-8", sub="byte")))
+
+## Convert to lower case
+myCorpus <- tm_map(myCorpus, content_transformer(tolower), lazy = TRUE)
+
+## remove punction, numbers, URLs, stop, profanity and stem wordson
+myCorpus <- tm_map(myCorpus, content_transformer(removePunctuation))
+myCorpus <- tm_map(myCorpus, content_transformer(removeNumbers))
+removeURL <- function(x) gsub("http[[:alnum:]]*", "", x) 
+myCorpus <- tm_map(myCorpus, content_transformer(removeURL))
+myCorpus <- tm_map(myCorpus, stripWhitespace)
+myCorpus <- tm_map(myCorpus, removeWords, stopwords("english"))
+
+## Profanity list obtained from here http://www.bannedwordlist.com/
+profanityfile <- file("http://www.bannedwordlist.com/lists/swearWords.txt", open = "rb")
+profanityWords<-readLines(profanityfile, encoding = "UTF-8", warn=TRUE, skipNul=TRUE)
+close(profanityfile)
+rm(profanityfile)
+
+myCorpus <- tm_map(myCorpus, removeWords, profanityWords)
+myCorpus <- tm_map(myCorpus, stemDocument)
+myCorpus <- tm_map(myCorpus, stripWhitespace)
+
+```
+
+```{r, eval=FALSE, echo=FALSE}
+## Saving the final corpus
+saveRDS(myCorpus, file = "./finalCorpus.RDS")
+
+finalCorpus <- readRDS("./finalCorpus.RDS")
+
+finalCorpusDF <-data.frame(text=unlist(sapply(finalCorpus,`[`, "content")), 
+                           stringsAsFactors = FALSE)
+```
+
+# N-Gram Tokenization
+
+In Natural Language Processing (NLP) an n-gram is a contiguous sequence of n items from a given sequence of text or speech. An n-gram of size 1 is referred to as a "unigram"; size 2 is a "bigram" (or, less commonly, a "digram"); size 3 is a "trigram". Larger sizes are sometimes referred to by the value of n, e.g., "four-gram", "five-gram", and so on.
+
+The following function is used to extract 1-grams, 2-grams and 2-grams from the text corpus.
+
+```{r, eval=FALSE, echo=TRUE}
+
+ngramTokenizer <- function(theCorpus, ngramCount) {
+        ngramFunction <- NGramTokenizer(theCorpus, 
+                                Weka_control(min = ngramCount, max = ngramCount, 
+                                delimiters = " \\r\\n\\t.,;:\"()?!"))
+        ngramFunction <- data.frame(table(ngramFunction))
+        ngramFunction <- ngramFunction[order(ngramFunction$Freq, 
+                                             decreasing = TRUE),][1:10,]
+        colnames(ngramFunction) <- c("String","Count")
+        ngramFunction
+}
+
+unigram <- ngramTokenizer(finalCorpusDF, 1)
+saveRDS(unigram, file = "./unigram.RDS")
+bigram <- ngramTokenizer(finalCorpusDF, 2)
+saveRDS(bigram, file = "./bigram.RDS")
+trigram <- ngramTokenizer(finalCorpusDF, 3)
+saveRDS(trigram, file = "./trigram.RDS")
+
+```
+
+By the usage of the tokenizer function for the n-grams a distribution of the following top 10 words and word combinations can be inspected. Unigrams are single words, while bigrams are two word combinations and trigrams are three word combinations.
+
+
+# Top Unigrams
+
+```{r , results="asis"}
+unigram <- readRDS("./unigram.RDS")
+unigramPlot <- gvisColumnChart(unigram, "String", "Count",                  
+                            options=list(legend="none"))
+
+plot(unigramPlot, "chart")
+```
+
+# Top Bigrams
+
+```{r, results="asis" }
+bigram <- readRDS("./bigram.RDS")
+bigramPlot <- gvisColumnChart(bigram, "String", "Count",                  
+                            options=list(legend="none"))
+plot(bigramPlot, "chart")
+```
+
+# Top Trigrams
+
+```{r , results="asis"}
+trigram <- readRDS("./trigram.RDS")
+trigramPlot <- gvisColumnChart(trigram, "String", "Count",                  
+                            options=list(legend="none"))
+
+plot(trigramPlot, "chart")
+```
+
+
+# Remarks
+
+- Loading the dataset takes a lot of time.Thus sampling is essential and affects prediction accuracy.
+- Data cleaning should not remove essential words for prediction.
+- Use Rweka library directly for N-grams tokenization.
+- Investigate if pre-classification might help prediction.
+
+# Next Steps
+
+- Improve runtime of the algorithm.
+- Evaluate prediction efficiency and accuracy.
+- Use a profile to identify the bottlenecks in code.
+- Develop and deploy ShinyApp.
+
+# Session Information
+
+```{r}
+sessionInfo()
+```
+
+
+
+
+
+
+
+
+
